@@ -1,0 +1,62 @@
+# Python 缓存目录
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+venv-bundle/
+
+# IDE specific
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Log and checkpoint directories
+logdir/
+checkpoint.*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# CARLA simulator
+Carla/
+carla/
+
+# Checkpoints and training logs
+*.ckpt
+*.log
+logs/
+checkpoints/
+
+# Other common files
+.pytest_cache/
+.coverage
+htmlcov/
+.pyre/
