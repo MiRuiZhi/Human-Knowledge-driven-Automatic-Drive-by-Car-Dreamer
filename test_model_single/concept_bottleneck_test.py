@@ -7,7 +7,7 @@ import os
 import jax
 import jax.numpy as jnp
 import numpy as np
-from dreamerv3.agent_concept import ConceptBottleneck
+from dreamerv3.nets import ConceptBottleneck
 import dreamerv3.ninjax as nj
 
 
