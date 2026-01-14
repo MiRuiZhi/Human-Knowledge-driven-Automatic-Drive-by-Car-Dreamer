@@ -33,13 +33,13 @@ bash train_dm3.sh <carla_port> <gpu_device> [additional_training_parameters]
 
 1. **基础训练命令（四车道任务）：**
    ```bash
-   bash train_dm3.sh 2000 0 --task carla_four_lane --dreamerv3.logdir ./logdir/carla_four_lane
+   bash train_dm3.sh 2000 0 --task carla_lane_merge --dreamerv3.logdir ./logdir/carla_lane_merge
    ```
 
 2. **覆盖特定参数的训练：**
    ```bash
-   bash train_dm3.sh 2000 0 --task carla_right_turn_simple \
-       --dreamerv3.logdir ./logdir/carla_right_turn_simple \
+   bash train_dm3.sh 2000 0 --task carla_lane_merge \
+       --dreamerv3.logdir ./logdir/carla_lane_merge \
        --dreamerv3.run.steps=5e6
    ```
 

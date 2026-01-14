@@ -1,5 +1,6 @@
 #!/bin/bash
-
+export CARLA_ROOT="/home/miruizhi/workspace/carla"
+export PYTHONPATH="${CARLA_ROOT}/PythonAPI/carla":${PYTHONPATH}
 # Check if a port argument is provided
 if [ $# -lt 2 ]; then
     echo "Usage: $0 <carla_port> <gpu_device> [additional_training_parameters]"

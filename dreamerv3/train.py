@@ -153,21 +153,16 @@ if __name__ == "__main__":
     # 为了调试目的，可以在此处添加特定的参数
     import sys
     
-    # 示例：添加调试参数，例如指定任务、日志目录、训练步数等
-    # 可以通过命令行参数或直接在代码中指定
-    debug_argv = [
-        "--task", "carla_right_turn_simple",  # 默认任务，可根据需要修改
-        "--dreamerv3.logdir", "./logdir/debug_run",  # 日志目录
-        "--dreamerv3.run.steps", "1e5",  # 减少训练步数用于调试
-        "--dreamerv3.batch_size", "4",  # 减少批大小用于调试
-        "--dreamerv3.batch_length", "16",  # 减少序列长度用于调试
-        "--dreamerv3.run.eval_every", "1000",  # 减少评估频率用于调试
-        "--dreamerv3.eval_eps", "1",  # 减少评估episode数
+    # 使用用户提供的参数作为预定义参数
+    predefined_argv = [
+        "--task", "carla_lane_merge",
+        "--dreamerv3.logdir", "./logdir/carla_lane_merge",
+        "--dreamerv3.run.steps", "5e6",
     ]
     
-    # 如果命令行提供了参数，则使用命令行参数，否则使用调试参数
+    # 如果命令行提供了参数，则使用命令行参数，否则使用预定义参数
     if len(sys.argv) > 1:
         main()
     else:
-        print("使用调试参数运行...")
-        main(debug_argv)
+        print("使用预定义参数运行...")
+        main(predefined_argv)
