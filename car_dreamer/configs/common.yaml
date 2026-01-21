@@ -1,101 +1,139 @@
+# CarDreamer项目通用配置文件
+# 定义了所有任务共享的基本配置参数
 env:
+  # 评估模式开关
   eval: False
 
+  # 仿真环境配置
   world:
+    # CARLA服务器端口号
     carla_port: 2000
+    # 仿真地图名称
     town: "Town04" # which town map to use
+    # 激活范围内actors的距离阈值
     actor_active_distance: 100
+    # 仿真的固定时间步长（秒）
     fixed_delta_seconds: 0.1
+    # 是否自动进行车道变更
     auto_lane_change: True
+    # 交通流量配置
     traffic:
-      tm_seed: 2024
+      # 交通管理器种子，用于随机生成交通流
+      tm_seed: 2026
 
+  # 观测空间配置
   observation:
+    # 相机观测传感器配置
     camera:
+      # 处理器类型
       handler: camera
+      # 传感器蓝图
       blueprint: sensor.camera.rgb
+      # 数据键名
       key: camera
+      # 观测数据形状 [高度, 宽度, 通道数]
       shape: [128, 128, 3]
+      # 传感器相对于车辆的变换矩阵
       transform:
-        x: 1.5
-        z: 2.0
+        x: 1.5  # X轴偏移
+        z: 2.0  # Z轴偏移（高度）
+      # 传感器属性
       attributes:
-        image_size_x: 128
-        image_size_y: 128
-        fov: 120.0
-        sensor_tick: 0.1
+        image_size_x: 128  # 图像宽度
+        image_size_y: 128  # 图像高度
+        fov: 120.0         # 视野角度
+        sensor_tick: 0.1     # 传感器更新周期
 
-    # LiDAR sensor
+    # LiDAR激光雷达传感器配置
     lidar:
       handler: lidar
       blueprint: sensor.lidar.ray_cast
       key: lidar
       shape: [128, 128, 3]
+      # LiDAR的量化精度
       lidar_bin: 0.25
+      # 车辆中心点偏移
       ego_offset: 12
       transform:
-        z: 2.1
+        z: 2.1  # Z轴偏移（高度）
       attributes:
-        range: 32
-        channels: 32
-        sensor_tick: 0.1
+        range: 32      # 检测范围
+        channels: 32   # 通道数
+        sensor_tick: 0.1 # 传感器更新周期
 
-    # collision sensor
+    # 碰撞传感器配置
     collision:
       handler: collision
       blueprint: sensor.other.collision
       key: collision
+      # 碰撞传感器输出形状
       shape: [1]
 
+    # 俯视视角观察者传感器
     spectator:
       handler: spectator
       key: spectator
+      # 俯视图形状
       shape: [512, 512, 3]
+      # 相机高度
       height: 40
+      # 视野角度
       fov: 90
+      # 传感器更新周期
       sensor_tick: 0.1
+      # 俯仰角
       pitch: -90
 
-    # BEV with only roadmap, vehicles, and waypoints
+    # BEV鸟瞰图传感器配置（仅包含道路图、车辆和航路点）
     birdeye_raw:
       handler: birdeye
       key: birdeye_raw
       shape: [128, 128, 3]
+      # 观测范围
       obs_range: 32
+      # 车辆中心点偏移
       ego_offset: 12
+      # 视野角度
       sight_fov: 150
+      # 视野范围
       sight_range: 32
+      # 可观测性模式：[full, recursive_fov, fov]
       observability: full # [full, recursive_fov, fov]
+      # 是否按观测着色
       color_by_obs: False
+      # 航路点观测模式：[neighbor, visible, all]
       waypoint_obs: visible # [neighbor, visible, all]
+      # 是否扩展航路点
       extend_wpt: False
+      # 在BEV中渲染的实体类型
       entities: [roadmap, waypoints, ego_vehicle, background_vehicles]
 
-    # Render waypoints on BEV
+    # 在BEV中渲染航路点
     birdeye_wpt:
       handler: birdeye
       key: birdeye_wpt
       shape: [128, 128, 3]
       obs_range: 32
       ego_offset: 12
-      # sight_fov = 150 equivalent to [150, 150] for [front, rear] FOV
-      # Use [150, 90] to mimic human driver views
+      # sight_fov = 150 等价于 [150, 150] 表示前后视野角度
+      # 使用 [150, 90] 来模拟人类驾驶员视角
       sight_fov: 150
       sight_range: 32
       observability: full
       color_by_obs: False
       waypoint_obs: visible
       extend_wpt: False
+      # 在BEV中渲染的实体类型
       entities:
         [
-          roadmap,
-          waypoints,
-          background_waypoints,
-          ego_vehicle,
-          background_vehicles,
+          roadmap,                    # 道路图
+          waypoints,                  # 航路点
+          background_waypoints,       # 背景航路点
+          ego_vehicle,               # 自车
+          background_vehicles,       # 背景车辆
         ]
 
-    # Render all information on BEV
+    # 在BEV中渲染全部信息
     birdeye_gt:
       handler: birdeye
       key: birdeye_gt
@@ -105,20 +143,22 @@ env:
       sight_fov: 150
       sight_range: 32
       observability: full
+      # 是否按观测着色
       color_by_obs: True
       waypoint_obs: visible
       extend_wpt: False
+      # 在BEV中渲染的实体类型
       entities:
         [
-          roadmap,
-          waypoints,
-          background_waypoints,
-          fov_lines,
-          ego_vehicle,
-          background_vehicles,
+          roadmap,                   # 道路图
+          waypoints,                 # 航路点
+          background_waypoints,      # 背景航路点
+          fov_lines,                 # 视野线
+          ego_vehicle,              # 自车
+          background_vehicles,      # 背景车辆
         ]
 
-    # Render traffic sign on BEV
+    # 在BEV中渲染交通标志
     birdeye_with_traffic_lights:
       handler: birdeye
       key: birdeye_with_traffic_lights
@@ -131,17 +171,19 @@ env:
       color_by_obs: False
       waypoint_obs: visible
       extend_wpt: False
+      # 在BEV中渲染的实体类型
       entities:
         [
-          roadmap,
-          waypoints,
-          background_waypoints,
-          ego_vehicle,
-          background_vehicles,
-          traffic_lights,
-          stop_signs,
+          roadmap,                    # 道路图
+          waypoints,                  # 航路点
+          background_waypoints,       # 背景航路点
+          ego_vehicle,               # 自车
+          background_vehicles,       # 背景车辆
+          traffic_lights,            # 交通灯
+          stop_signs,                # 停车标志
         ]
 
+    # 在BEV中渲染带错误的航路点
     birdeye_wpt_with_errors:
       handler: birdeye
       key: birdeye_wpt_with_errors
@@ -154,19 +196,29 @@ env:
       color_by_obs: False
       waypoint_obs: visible
       extend_wpt: False
+      # 错误率
       error_rate: 0.2
+      # 在BEV中渲染的实体类型
       entities: [roadmap, waypoints, error_background_waypoints, ego_vehicle, background_vehicles]
 
+  # 显示配置
   display:
+    # 是否启用显示
     enable: True
+    # 渲染的关键观测项
     render_keys: [camera, birdeye_wpt]
+    # 图像尺寸
     image_size: 512
 
+  # 动作空间配置
   action:
+    # 是否使用离散动作空间
     discrete: True
-    # Discrete control space. Use continuos_acc and continuous_steer if discrete is False
-    discrete_acc: [-2.0, 0.0, 2.0] # discrete value of accelerations
-    discrete_steer: [-0.6, -0.2, 0.0, 0.2, 0.6] # discrete value of steering angles
-    continuous_acc: [-3.0, 3.0] # continuous value of accelerations
-    continuous_steer: [-1.0, 1.0] # continuous value of steering angles
+    # 离散控制空间配置。如果discrete为False则使用continuous_acc和continuous_steer
+    discrete_acc: [-2.0, 0.0, 2.0] # 离散加速度值
+    discrete_steer: [-0.6, -0.2, 0.0, 0.2, 0.6] # 离散转向角度值
+    # 连续控制空间配置
+    continuous_acc: [-3.0, 3.0] # 连续加速度值
+    continuous_steer: [-1.0, 1.0] # 连续转向角度值
+    # 文本命令数量（用于消息处理器）
     n_commands: 3 # number of text commands for message handler

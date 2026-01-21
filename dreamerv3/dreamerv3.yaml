@@ -60,7 +60,7 @@ defaults:
   data_loaders: 8
 
   # World Model
-  grad_heads: [decoder, reward, cont]
+  grad_heads: [decoder, reward, cont, concept]
   rssm:
     {
       deter: 4096,
@@ -141,6 +141,20 @@ defaults:
       winit: normal,
       fan: avg,
     }
+  concept_bottleneck:
+    {  # init的时候自己推断是否进行降维表征与升维重建
+      knowledge_dim: 128,  # 知识表示的维度
+      enc_trans_ratio: 2,  # 降维时，每次维度//2
+      dec_trans_ratio: 2,  # 升维时，每次维度*2
+      activate: silu,  # 激活函数
+      norm: layer,  # 归一化方法
+      inputs: [deter, stoch],
+      concept_atoms: 128,  # 概念的数量
+      lambda: 0.05,
+      step: 50,  # ISTA迭代步数
+      gamma: 0.1,
+    }
+  
   loss_scales:
     {
       image: 1.0,

@@ -92,7 +92,7 @@ class Agent(nj.Module):
         # 解析状态：(上一潜变量, 上一动作), 任务状态, 探索状态
         (prev_latent, prev_action), task_state, expl_state = state
         embed = self.wm.encoder(obs)  # 编码观测
-        # 通过RSSM更新潜变量
+        # 通过RSSM更新潜变量 latent为后验状态
         latent, _ = self.wm.rssm.obs_step(prev_latent, prev_action, embed, obs["is_first"])
         # 获取探索行为策略的输出
         self.expl_behavior.policy(latent, expl_state)
@@ -226,6 +226,7 @@ class WorldModel(nj.Module):
         self.encoder = nets.MultiEncoder(shapes, **config.encoder, name="enc")
         # RSSM：递归状态空间模型
         self.rssm = nets.RSSM(**config.rssm, name="rssm")
+        
         # 定义多个预测头：解码器、奖励、连续性
         self.heads = {
             "decoder": nets.MultiDecoder(shapes, **config.decoder, name="dec"),
@@ -234,7 +235,7 @@ class WorldModel(nj.Module):
         }
         # 世界模型优化器
         self.opt = jaxutils.Optimizer(name="model_opt", **config.model_opt)
-        # 损失缩放配置
+        # 损失缩放配置, 给self.heads["decoder"].cnn_shapes里的键，mapping loss_scale里的值，生成一个字典
         scales = self.config.loss_scales.copy()
         image, vector = scales.pop("image"), scales.pop("vector")
         scales.update({k: image for k in self.heads["decoder"].cnn_shapes})
@@ -279,16 +280,21 @@ class WorldModel(nj.Module):
             损失值和相关指标
         """
         # 编码观测
-        embed = self.encoder(data)  # B L F
-        prev_latent, prev_action = state  # 先前的潜变量和动作 RSSM 隐状态 和 动作 B Action维度
-        # 准备动作序列 B Length A
+        embed = self.encoder(data)  # B L d（被处理后的特征通道）
+        prev_latent, prev_action = state  # 先前的潜变量和动作 RSSM 隐状态 和 动作 B Action维度  每个latend都有deter (B,512) stoch(B,32,32) logit(B,32,32)
+        # 准备动作序列 prev_actions: B Length A                prev_action:  B*L a 
         prev_actions = jnp.concatenate([prev_action[:, None], data["action"][:, :-1]], 1)
         # 通过RSSM观察得到后验和先验状态
         post, prior = self.rssm.observe(embed, prev_actions, data["is_first"], prev_latent)
-        
+        # post： deter, stoch, logit  B L是分离的
+        # prior： deter, stoch, logit  B L是分离的
+        # 这里我们加入自己的模块，对post, prior进行进一步的操作
+        # post, prior, alpha = self.concept_bottleneck(post, prior)  # 被重建的post和prior，稀疏表示alpha
+
         dists = {}
-        # 准备特征用于预测头
+        # 准备特征用于预测头  只用后验和原始编码观测
         feats = {**post, "embed": embed}
+        # feats： deter, stoch, logit, embed
         for name, head in self.heads.items():
             # 根据配置决定是否对特征停止梯度
             out = head(feats if name in self.config.grad_heads else sg(feats))

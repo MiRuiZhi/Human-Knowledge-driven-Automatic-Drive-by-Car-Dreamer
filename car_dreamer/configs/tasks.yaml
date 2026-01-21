@@ -1,30 +1,46 @@
+# CarDreamer项目任务配置文件
+# 定义了所有内置任务的具体配置参数
+
+# 航路点任务的基础配置模板，不能直接使用
 carla_wpt:
   &carla_wpt # It's a base configuration for wpt tasks, don't use it directly
+  # 奖励函数配置
   reward:
+    # 期望速度（米/秒）
     desired_speed: 4 # desired speed (m/s)
+    # 奖励权重系数
     scales:
       {
-        waypoint: 2.0,
-        speed: 0.5,
-        collision: 30.0,
-        out_of_lane: 3.0,
-        time: 0.0,
-        destination_reached: 20.0,
+        waypoint: 2.0,              # 航路点奖励权重
+        speed: 0.5,                 # 速度奖励权重
+        collision: 30.0,            # 碰撞惩罚权重
+        out_of_lane: 3.0,           # 偏离车道惩罚权重
+        time: 0.0,                  # 时间奖励权重
+        destination_reached: 20.0,  # 到达目的地奖励权重
       }
+  # 终止条件配置
   terminal:
-    time_limit: 500 # maximum timesteps per episode
-    out_lane_thres: 3 # threshold for out of lane
+    time_limit: 500 # 每个episode的最大时间步数
+    out_lane_thres: 3 # 偏离车道的阈值
 
+# 导航任务配置
 carla_navigation:
   env:
+    # 环境名称
     name: CarlaNavigationEnv-v0
+    # 启用的观测类型
     observation.enabled: [camera, collision, birdeye_wpt]
+    # 背景车辆数量
     num_vehicles: 50
+    # 继承基础航路点任务配置
     <<: *carla_wpt
 
   dreamerv3:
+    # 编码器使用的CNN键
     encoder.cnn_keys: "birdeye_wpt"
+    # 解码器使用的CNN键
     decoder.cnn_keys: "birdeye_wpt"
+    # 日志记录的视频键
     run.log_keys_video: [camera, birdeye_wpt]
 
   dreamerv2:
@@ -33,17 +49,20 @@ carla_navigation:
     decoder.cnn_kernels: [5, 5, 5, 6, 6]
     train.log_keys_video: [camera, birdeye_wpt]
 
+# 四车道任务配置
 carla_four_lane:
   env:
     name: CarlaFourLaneEnv-v0
     observation.enabled: [camera, collision, birdeye_wpt]
     num_vehicles: 50
     <<: *carla_wpt
+    # 车道起始点坐标
     lane_start_points:
       - [5.8, 100, 0.1]
       - [9.0, 100, 0.1]
       - [12.2, 100, 0.1]
       - [15.6, 100, 0.1]
+    # 车道结束点坐标
     lane_end_points:
       - [5.8, -58, 0.1]
       - [9.0, -58, 0.1]
@@ -53,7 +72,7 @@ carla_four_lane:
   dreamerv3:
     encoder.cnn_keys: "birdeye_wpt"
     decoder.cnn_keys: "birdeye_wpt"
-    run.log_keys_video: [camera, birdeye_wpt]
+    run.log_keys_video: [birdeye_wpt]
     run.log_keys_max: "collision"
 
   dreamerv2:
@@ -62,46 +81,59 @@ carla_four_lane:
     decoder.cnn_kernels: [5, 5, 5, 6, 6]
     train.log_keys_video: [camera, birdeye_wpt]
 
+# 超车任务配置
 carla_overtake:
   env:
     name: CarlaOvertakeEnv-v0
-    observation.enabled: [collision, birdeye_wpt]
+    # 启用的观测类型（添加相机观测以与其他导航任务一致）
+    observation.enabled: [camera, collision, birdeye_wpt]
+    # 无自车的背景车辆spawn点
     nonego_spawn_points:
       - [5.8, 80.0, 0.1, 0.0, -90.0, 0.0]
       - [12.2, 80.0, 0.1, 0.0, -90.0, 0.0]
+    # 车道起始点
     lane_start_points:
       - [5.8, 100, 0.1]
+    # 车道结束点
     lane_end_points:
       - [5.8, 0.0, 0.1]
+    # 背景车辆摆动转向角度
     swing_steer: 0.04 # The background vehicle steer for swing .
+    # 背景车辆摆动幅度
     swing_amplitude: 0.2 # The y-axis amplitude of background vehicle steer.
+    # 触发背景车辆摆动的距离阈值
     swing_trigger_dist: 20 # The distance between ego and background vehicle that triggers swing.
+    # 背景车辆车道保持PID控制器参数
     pid_coeffs: [0.03, 0.0, 0.03] # The PID controller parameter for background vehicle lane keeping.
     reward:
       desired_speed: 5 # desired speed (m/s)
+      # 超车奖励距离
       reward_overtake_dist: 8 # The distance that triggers overtake reward.
+      # 提前变道惩罚距离
       early_lane_change_dist: 10 # The distance that penalizes early lane change.
+      # 车道宽度
       lane_width: 3.4
+      # 奖励权重系数
       scales:
         {
-          waypoint: 2.0,
-          speed: 0.5,
-          stay_same_lane: 0.3,
-          out_of_lane: 3.0,
-          collision: 30.0,
-          time: 0.0,
-          exceeding: 200.0,
-          overtake: 200.0,
-          early_lane_change: 0.0,
-          destination_reached: 20.0,
+          waypoint: 2.0,           # 航路点奖励权重
+          speed: 0.5,              # 速度奖励权重
+          stay_same_lane: 0.3,     # 保持同车道奖励权重
+          out_of_lane: 3.0,        # 偏离车道惩罚权重
+          collision: 30.0,         # 碰撞惩罚权重
+          time: 0.0,               # 时间奖励权重
+          exceeding: 200.0,        # 超速奖励权重
+          overtake: 200.0,         # 超车奖励权重
+          early_lane_change: 0.0,  # 提前变道惩罚权重
+          destination_reached: 20.0, # 到达目的地奖励权重
         }
     terminal:
-      out_lane_thres: 5 # threshold for out of lane
-      time_limit: 500 # maximum timesteps per episode
-      left_lane_boundry: 3.7 # out of lane boundry
-      right_lane_boundry: 17.7
-      lane_width: 3.4
-      terminal_dist: 100 # terminate tasks
+      out_lane_thres: 5 # 偏离车道阈值
+      time_limit: 500 # 最大时间步数
+      left_lane_boundry: 3.7 # 左侧车道边界
+      right_lane_boundry: 17.7 # 右侧车道边界
+      lane_width: 3.4 # 车道宽度
+      terminal_dist: 100 # 终止距离
 
   dreamerv3:
     encoder.cnn_keys: "birdeye_wpt"
@@ -114,18 +146,27 @@ carla_overtake:
     decoder.cnn_kernels: [5, 5, 5, 6, 6]
     train.log_keys_video: [birdeye_wpt]
 
+# 简单右转任务配置
 carla_right_turn_simple: &carla_right_turn_simple
   env:
     world:
+      # 使用Town03地图
       town: Town03
     name: CarlaRightTurnEnv-v0
     action:
+      # 右转任务专用转向角度
       discrete_steer: [-0.9, -0.3, 0.0, 0.3, 0.9]
+    # 启用的观测类型
     observation.enabled: [camera, collision, birdeye_wpt]
+    # 继承基础航路点任务配置
     <<: *carla_wpt
+    # 起始点坐标
     lane_start_point: [-33.8, -135.1, 0.1, 0.0]
+    # 自车路径
     ego_path: [[-33.8, -135.1, 0.1], [-5.0, -110.3, 0.1]]
+    # 是否使用道路航路点
     use_road_waypoints: [True, False]
+    # 流量生成点
     flow_spawn_point: [-3.4, -151.2, 0.1, 90.0]
 
   dreamerv3:
@@ -139,16 +180,23 @@ carla_right_turn_simple: &carla_right_turn_simple
     decoder.cnn_kernels: [5, 5, 5, 6, 6]
     train.log_keys_video: [camera, birdeye_wpt]
 
+# 中等难度右转任务配置
 carla_right_turn_medium:
+  # 继承简单右转任务配置
   <<: *carla_right_turn_simple
+  # 最小流量间距
   env.min_flow_dist: 8
+  # 最大流量间距
   env.max_flow_dist: 16
 
+# 困难右转任务配置
 carla_right_turn_hard:
+  # 继承简单右转任务配置
   <<: *carla_right_turn_simple
   env.min_flow_dist: 6
   env.max_flow_dist: 8
 
+# 随机右转任务配置
 carla_right_turn_random:
   env:
     world:
@@ -158,18 +206,21 @@ carla_right_turn_random:
       discrete_steer: [-0.9, -0.3, 0.0, 0.3, 0.9]
     observation.enabled: [camera, collision, birdeye_wpt]
     <<: *carla_wpt
+    # 多个起始点坐标
     lane_start_point:
       [
         [-33.8, -135.1, 0.1, 0.0],
         [-3.2, -165.2, 0.1, 90],
         [9.3, -106.2, 0.1, -90]
       ]
+    # 多个自车路径
     ego_path:
       [
         [[-33.8, -135.1, 0.1], [-5.0, -110.3, 0.1]],
         [[-3.2, -165.2, 0.1, 90], [-20.7, -142.2, 0.1, 180]],
         [[9.3, -106.2, 0.1, -90], [31.3, -130.7, 0.1, 0]]
       ]
+    # 是否使用道路航路点
     use_road_waypoints: [True, False]
 
   dreamerv3:
@@ -183,6 +234,7 @@ carla_right_turn_random:
     decoder.cnn_kernels: [5, 5, 5, 6, 6]
     train.log_keys_video: [camera, birdeye_wpt]
 
+# 简单左转任务配置
 carla_left_turn_simple: &carla_left_turn_simple
   env:
     world:
@@ -206,25 +258,30 @@ carla_left_turn_simple: &carla_left_turn_simple
     decoder.cnn_kernels: [5, 5, 5, 6, 6]
     train.log_keys_video: [camera, birdeye_wpt]
 
+# 中等难度左转任务配置
 carla_left_turn_medium:
   <<: *carla_left_turn_simple
   env.min_flow_dist: 8
   env.max_flow_dist: 16
 
+# 困难左转任务配置
 carla_left_turn_hard:
   <<: *carla_left_turn_simple
   env.min_flow_dist: 6
   env.max_flow_dist: 8
 
+# 环岛任务配置
 carla_roundabout:
   env:
     world:
       town: Town03
+      # 背景车辆速度
       background_speed: 16
     name: CarlaRoundaboutEnv-v0
     observation.enabled: [camera, collision, birdeye_wpt]
     <<: *carla_wpt
     lane_start_point: [-52.6, 1.0, 0.1, 0.0]
+    # 环岛路径
     ego_path:
       [
         [-52.6, 1.0, 0.1],
@@ -234,6 +291,7 @@ carla_roundabout:
         [7.6, -21.8, 0.1],
         [4.2, -43.2, 0.1],
       ]
+    # 是否使用道路航路点
     use_road_waypoints: [True, False, True, False, True, False]
     flow_spawn_point: [-14.1, -13.5, 0.1, 125.0]
     min_flow_dist: 10
@@ -251,14 +309,17 @@ carla_roundabout:
     decoder.cnn_kernels: [5, 5, 5, 6, 6]
     train.log_keys_video: [camera, birdeye_wpt]
 
+# 车道汇入任务配置
 carla_lane_merge:
   env:
     world:
       town: Town04
+      # 背景车辆速度
       background_speed: 25
     name: CarlaLaneMergeEnv-v0
     observation.enabled: [camera, collision, birdeye_wpt]
     <<: *carla_wpt
+    # 期望速度
     reward.desired_speed: 6 # desired speed (m/s)
     lane_start_point: [49.4, 141.4, 0.5, -155.0]
     ego_path: [[49.4, 141.4, 0.5], [15.4, 56.0, 0.1]]
@@ -278,6 +339,7 @@ carla_lane_merge:
     decoder.cnn_kernels: [5, 5, 5, 6, 6]
     train.log_keys_video: [camera, birdeye_wpt]
 
+# 交通灯任务配置
 carla_traffic_lights:
   env:
     world:
@@ -285,10 +347,13 @@ carla_traffic_lights:
     name: CarlaTrafficLightsEnv-v0
     action:
       discrete_steer: [-0.9, -0.3, 0.0, 0.3, 0.9]
+    # 使用包含交通灯的BEV观测
     observation.enabled: [camera, collision, birdeye_with_traffic_lights]
+    # 交通灯BEV观测范围
     observation.birdeye_with_traffic_lights.obs_range: 64
     reward:
       desired_speed: 4
+      # 奖励权重系数
       scales:
         waypoint: 2.0
         speed: 0.5
@@ -296,11 +361,12 @@ carla_traffic_lights:
         out_of_lane: 3.0
         time: 0.0
         destination_reached: 20.0
-        traffic_light_violate: 100.0
+        traffic_light_violate: 100.0  # 闯红灯惩罚
     terminal:
       time_limit: 500 # maximum timesteps per episode
       out_lane_thres: 3 # threshold for out of lane
 
+    # 起始点坐标（多个路径选项）
     lane_start_point:
       [
         [-0.3, -163.4, 0.1, 90.0],
@@ -308,6 +374,7 @@ carla_traffic_lights:
         [-3.5, -163.8, 0.1, 90.0],
         [-3.5, -163.8, 0.1, 90.0],
       ]
+    # 自车路径（多个路径选项）
     ego_path:
       [
         [[-0.3, -163.4, 0.1], [32.5, -133.8, 0.1]],
@@ -315,12 +382,17 @@ carla_traffic_lights:
         [[-3.5, -163.8, 0.1], [-4.7, -110.6, 0.1]],
         [[-3.5, -163.8, 0.1], [-27.0, -138.8, 0.1]],
       ]
+    # 是否使用道路航路点
     use_road_waypoints: [True, False]
+    # 交通信号灯位置
     traffic_locations: [-3.4, -125.1, 0.1] # Location of traffic sign
+    # 红灯持续时间范围
     red_duration: [60, 80]
+    # 绿灯持续时间范围
     green_duration: [40, 50]
 
     display:
+      # 渲染包含交通灯的BEV
       render_keys: [camera, birdeye_with_traffic_lights]
 
   dreamerv3:
@@ -334,6 +406,7 @@ carla_traffic_lights:
     decoder.cnn_kernels: [5, 5, 5, 6, 6]
     train.log_keys_video: [camera, birdeye_with_traffic_lights]
 
+# 停车标志任务配置
 carla_stop_sign:
   env:
     world:
@@ -341,10 +414,13 @@ carla_stop_sign:
     name: CarlaStopSignEnv-v0
     action:
       discrete_steer: [-0.9, -0.3, 0.0, 0.3, 0.9]
+    # 使用包含交通灯的BEV观测
     observation.enabled: [camera, collision, birdeye_with_traffic_lights]
+    # 交通灯BEV观测范围
     observation.birdeye_with_traffic_lights.obs_range: 64
     reward:
       desired_speed: 4
+      # 奖励权重系数
       scales:
         waypoint: 2.0
         speed: 0.5
@@ -352,21 +428,28 @@ carla_stop_sign:
         out_of_lane: 3.0
         time: 0.0
         destination_reached: 20.0
-        traffic_light_violate: 100.0
-        stop_sign: 5.0
-        speed_before_stop: 1.0
+        traffic_light_violate: 100.0  # 闯红灯惩罚
+        stop_sign: 5.0               # 停车标志奖励
+        speed_before_stop: 1.0       # 停车前速度惩罚
     terminal:
       time_limit: 500 # maximum timesteps per episode
       out_lane_thres: 3 # threshold for out of lane
 
+    # 起始点坐标
     lane_start_point: [[179.5, -169.5, 5, 0.0]]
+    # 自车路径
     ego_path: [[[179.5, -169.5, 0.1], [215.5, -169.1, 0.1]]]
+    # 是否使用道路航路点
     use_road_waypoints: [True, False]
+    # 交通标志位置
     traffic_locations: [189.9, -169.6, 0.1] # Location of traffic sign
+    # 停车标志接近阈值
     stop_sign_proximity_threshold: 2
+    # 停车时间
     stopping_time: 60 # How long should the vehicle stops
 
     display:
+      # 渲染包含交通灯的BEV
       render_keys: [camera, birdeye_with_traffic_lights]
 
   dreamerv3:
@@ -380,6 +463,7 @@ carla_stop_sign:
     decoder.cnn_kernels: [5, 5, 5, 6, 6]
     train.log_keys_video: [camera, birdeye_with_traffic_lights]
 
+# 跟随任务配置
 carla_follow:
   env:
     world:
@@ -387,46 +471,53 @@ carla_follow:
     name: CarlaFollowEnv-v0
     action:
       discrete_steer: [-0.9, -0.3, 0.0, 0.3, 0.9]
+    # 启用的观测类型
     observation.enabled: [camera, collision, birdeye_wpt]
     <<: *carla_wpt
+    # PID控制器参数
     pid_coeffs: [0.03, 0.0, 0.0]
     reward:
       desired_speed: 4
+      # 奖励权重系数
       scales: {
-        waypoint: 0.0,
-        speed: 0.0,
-        collision: 350.0,
-        out_of_lane: 75.0,
-        time: 0.0,
-        destination_reached: 1.0,
-        velocity: 0.15,
-        waypoints: 4.0,
-        distance: 2.0
+        waypoint: 0.0,          # 航路点奖励权重
+        speed: 0.0,             # 速度奖励权重
+        collision: 350.0,       # 碰撞惩罚权重
+        out_of_lane: 75.0,      # 偏离车道惩罚权重
+        time: 0.0,              # 时间奖励权重
+        destination_reached: 1.0, # 到达目的地奖励权重
+        velocity: 0.15,         # 速度奖励权重
+        waypoints: 4.0,         # 航路点奖励权重
+        distance: 2.0           # 距离奖励权重
       }
 
     terminal:
       time_limit: 500 # maximum timesteps per episode
       out_lane_thres: 5 # threshold for out of lane
-      terminal_dist: 30
+      terminal_dist: 30 # 终止距离
 
+    # 测试方向
     direction: 2    # determining which direction we are testing
-                    # 0: straight
-                    # 1: right turn
-                    # 2: left turn
-                    # -1: random
+                    # 0: straight 直行
+                    # 1: right turn 右转
+                    # 2: left turn 左转
+                    # -1: random 随机
 
+    # 无自车的背景车辆spawn点
     nonego_spawn_points:
-      - [-53.6, -135.8, 0.1, 0.0, 0.0, 0.0] # straight
-      - [-32.4, -135.3, 0.1, 0.0, 0.0, 0.0] # right turn
-      - [-27.3, -135.2, 0.1, 0.0, 0.0, 0.0] # left turn
+      - [-53.6, -135.8, 0.1, 0.0, 0.0, 0.0] # straight 直行
+      - [-32.4, -135.3, 0.1, 0.0, 0.0, 0.0] # right turn 右转
+      - [-27.3, -135.2, 0.1, 0.0, 0.0, 0.0] # left turn 左转
+    # 车道起始点
     lane_start_points:
-      - [-63.6, -135.8, 0.1] # straight
-      - [-42.4, -135.3, 0.1] # right turn
-      - [-37.3, -135.2, 0.1] # left turn
+      - [-63.6, -135.8, 0.1] # straight 直行
+      - [-42.4, -135.3, 0.1] # right turn 右转
+      - [-37.3, -135.2, 0.1] # left turn 左转
+    # 车道结束点
     lane_end_points:
-      - [-14.4, -134.5, 0.1] # straight
-      - [-5.1, -91.1, 0.1] # right turn
-      - [7.2, -178.2, 0.1] # left turn
+      - [-14.4, -134.5, 0.1] # straight 直行
+      - [-5.1, -91.1, 0.1] # right turn 右转
+      - [7.2, -178.2, 0.1] # left turn 左转
 
   dreamerv3:
     encoder.cnn_keys: "birdeye_wpt"
