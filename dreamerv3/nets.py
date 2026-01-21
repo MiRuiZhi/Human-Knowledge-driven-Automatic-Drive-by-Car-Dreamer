@@ -43,28 +43,26 @@ class ConceptBottleneck(nj.Module):
     """
     def __init__(
         self, 
-        shapes,               # 输出形状字典
-        config,               # 配置参数
-        inputs=['deter'],  # 输入键列表
+        config,               # 配置参数 未解包的字典
+        inputs=['post_deter', 'post_stoch', 'prior_deter', 'prior_stoch'],     # 输入键列表， Input模块处理输入，我们根据deter和stoch共同提取概念表示  目前我们考虑所有状态
         knowledge_dim=128,    # 知识表示的维度
-        enc_trans_ratio=2,    # 降维时，每次维度//2
-        dec_trans_ratio=2,    # 升维时，每次维度*2
+        enc_trans_ratio=4,    # 降维时，每次维度//enc_trans_ratio
+        dec_trans_ratio=4,    # 升维时，每次维度*dec_trans_ratio
         activate='silu',      # 激活函数
         norm="none",          # 归一化方法
         n_atoms=128,          # 概念的数量
         lambda_=0.05,         # 稀疏正则化系数
         n_steps=50,           # ISTA迭代步数
         gamma=0.1,            # ISTA步长参数
-        dims=None,           # 输入维度
+        dims='post_deter',           # 输入维度,只是维度，不看每个维度有多少个向量
         **kw                  # 其他关键字参数
     ):
         """
         初始化概念瓶颈模块
         
         Args:
-            shapes: 输入形状字典
+            config: 配置参数
             inputs: 输入键列表
-            excluded: 排除的字段
             knowledge_dim: 知识表示的维度
             enc_trans_ratio: 降维比例
             dec_trans_ratio: 升维比例
@@ -74,23 +72,198 @@ class ConceptBottleneck(nj.Module):
             lambda_: 稀疏正则化系数
             n_steps: ISTA迭代步数
             gamma: ISTA步长参数
-            name: 模块名称
+            dims: 输入维度
             **kw: 其他关键字参数
         """
-        # 过滤形状
-        excluded=("is_first", "is_last", "is_terminal", "reward"),  # 排除的字段
-        shapes = {k: v for k, v in shapes.items() if k not in excluded}  # 要重建的输入特征
-
+        self.config = config
         self._inputs = Input(inputs, dims=dims)  # 创建输入处理器
-        
-        # 不管维度是多少，利用内置MLP，映射到knowledge_dim维
-        self.encMLP = MLP((), **config.reward_head, name="rew")
+        self.knowledge_dim = knowledge_dim
+        self.enc_trans_ratio = enc_trans_ratio
+        self.dec_trans_ratio = dec_trans_ratio
+        self.n_atoms = n_atoms
+        self.lambda_ = lambda_
+        self.n_steps = n_steps
+        self.gamma = gamma
+        self.activate = activate
+        self.norm = norm
         
         # 初始化字典矩阵 D ∈ ℝ^(n_atoms × knowledge_dim)
         self.D = nj.Variable(self._init_dict_matrix, name="dict_matrix")
+
+    def _init_dict_matrix(self):
+        """初始化字典矩阵"""
+        # 使用随机初始化并进行归一化
+        rng_key = nj.rng()
+        init_dict = jax.random.uniform(rng_key, (self.n_atoms, self.knowledge_dim), minval=-0.1, maxval=0.1)
+        return jnp.divide(init_dict.T, jnp.linalg.norm(init_dict.T, axis=0, keepdims=True)).T
+
+    def __call__(self, post, prior):
+        """
+        前向传播函数，处理post和prior状态并返回重建的post、prior和概念表示alpha
         
-        # 输入处理器
-        self._inputs = Input(inputs)
+        Args:
+            post: 后验状态字典
+            prior: 先验状态字典
+            
+        Returns:
+            tuple: (reconstructed_post, reconstructed_prior, alpha)
+                   其中reconstructed_post和reconstructed_prior为重建后的状态字典，
+                   alpha为稀疏概念表示
+        """
+        # 准备合并post和prior的输入
+        combined_input = {}
+        # 将post和prior的所有键值对都放入combined_input中
+        for key, value in post.items():
+            combined_input[f'post_{key}'] = value
+        for key, value in prior.items():
+            combined_input[f'prior_{key}'] = value
+        
+        # 使用Input接口处理输入特征，自动识别维度
+        features = self._inputs(combined_input)  # B L 合并后计算的维度
+        
+        # 获取原始形状信息
+        original_batch_time_shape = features.shape[:-1]  # (B, T) 或其他批量维度
+        feature_dim = features.shape[-1]  # 特征维度
+        
+        # 重塑为二维 (B*T, d)
+        features_flat = features.reshape((-1, feature_dim))
+        
+        # 使用多层MLP进行降维，按照enc_trans_ratio逐步降维到knowledge_dim
+        projected_features = self._encode_to_knowledge(features_flat, feature_dim)  # B*T 128
+        
+        # 应用LISTA算法
+        reconstructed_flat, alpha = self.compute(projected_features)
+        
+        # 使用多层MLP进行升维，按照dec_trans_ratio逐步升维到原始维度
+        recovered_features_flat = self._decode_to_original(reconstructed_flat, feature_dim)
+        
+        # 恢复原始形状
+        recovered_features = recovered_features_flat.reshape(original_batch_time_shape + (feature_dim,))
+        alpha = alpha.reshape(original_batch_time_shape + (self.n_atoms,))
+        
+        # 现在需要从recovered_features中重新分离出post和prior
+        reconstructed_post = {}
+        reconstructed_prior = {}
+        
+        # 获取实际被Input使用的键
+        used_keys = self._inputs._keys  # Input类中存储了实际使用的键
+        
+        # 计算每个键在连接后的特征中所占的维度
+        # 首先需要知道每个键的维度
+        key_dims = {}
+        for key, value in combined_input.items():
+            if len(value.shape) <= 2:  # 如果只有批次和时间维度
+                key_dims[key] = value.shape[-1]
+            else:  # 如果还有额外的维度
+                key_dims[key] = int(np.prod(value.shape[2:]))  # 计算额外维度的乘积
+        
+        # 重构post部分 - 只重构被Input实际使用的post键
+        start_idx = 0
+        for key in sorted(post.keys()):
+            # 获取原始post[key]的最后一维大小
+            if len(post[key].shape) <= 2:  # 如果只有批次和时间维度
+                last_dim_size = post[key].shape[-1]
+            else:  # 如果还有额外的维度
+                last_dim_size = int(np.prod(post[key].shape[2:]))
+            
+            post_key = f'post_{key}'
+            if post_key in used_keys:
+                # 从recovered_features中提取相应部分
+                extracted_part = recovered_features[..., start_idx:start_idx + last_dim_size]
+                # 重塑回原始形状，仅对使用的键进行重构
+                reconstructed_post[key] = extracted_part.reshape(post[key].shape)
+                start_idx += last_dim_size
+            else:
+                # 对于未使用的键，直接复制原始值
+                reconstructed_post[key] = post[key]
+        
+        # 重构prior部分 - 只重构被Input实际使用的prior键
+        for key in sorted(prior.keys()):
+            # 获取原始prior[key]的最后一维大小
+            if len(prior[key].shape) <= 2:  # 如果只有批次和时间维度
+                last_dim_size = prior[key].shape[-1]
+            else:  # 如果还有额外的维度
+                last_dim_size = int(np.prod(prior[key].shape[2:]))
+            
+            prior_key = f'prior_{key}'
+            if prior_key in used_keys:
+                # 从recovered_features中提取相应部分
+                extracted_part = recovered_features[..., start_idx:start_idx + last_dim_size]
+                # 重塑回原始形状，仅对使用的键进行重构
+                reconstructed_prior[key] = extracted_part.reshape(prior[key].shape)
+                start_idx += last_dim_size
+            else:
+                # 对于未使用的键，直接复制原始值
+                reconstructed_prior[key] = prior[key]
+
+        return reconstructed_post, reconstructed_prior, alpha
+
+    def _encode_to_knowledge(self, x, input_dim):
+        """
+        多层编码器：按照enc_trans_ratio逐步降维到knowledge_dim
+        
+        Args:
+            x: 输入特征 (B*T, input_dim)
+            input_dim: 输入维度
+            
+        Returns:
+            降维后的特征 (B*T, knowledge_dim)
+        """
+        current_dim = input_dim
+        hidden = x
+        
+        # 计算需要多少层
+        num_layers = 0
+        temp_dim = current_dim
+        while temp_dim > self.knowledge_dim:
+            temp_dim = max(self.knowledge_dim, temp_dim // self.enc_trans_ratio)
+            num_layers += 1
+        
+        # 逐层降维
+        for i in range(num_layers):
+            # 计算下一层的维度
+            next_dim = max(self.knowledge_dim, current_dim // self.enc_trans_ratio)
+            
+            # 创建并应用线性层
+            hidden = self.get(f'enc_layer_{i}', Linear, next_dim, act=self.activate, norm=self.norm)(hidden)
+            
+            current_dim = next_dim
+            
+        return hidden
+
+    def _decode_to_original(self, x, target_dim):
+        """
+        多层解码器：按照dec_trans_ratio逐步升维到target_dim
+        
+        Args:
+            x: 输入特征 (B*T, knowledge_dim)
+            target_dim: 目标维度（原始特征维度）
+            
+        Returns:
+            升维后的特征 (B*T, target_dim)
+        """
+        current_dim = self.knowledge_dim
+        hidden = x
+        
+        # 计算需要多少层
+        num_layers = 0
+        temp_dim = current_dim
+        while temp_dim < target_dim:
+            temp_dim = min(target_dim, temp_dim * self.dec_trans_ratio)
+            num_layers += 1
+        
+        # 逐层升维
+        for i in range(num_layers):
+            # 计算下一层的维度
+            next_dim = min(target_dim, current_dim * self.dec_trans_ratio)
+            
+            # 创建并应用线性层
+            hidden = self.get(f'dec_layer_{i}', Linear, next_dim, act=self.activate, norm=self.norm)(hidden)
+            
+            current_dim = next_dim
+            
+        return hidden
+
     def compute(self, h):
         """
         LISTA前向传播函数
@@ -150,25 +323,33 @@ class ConceptBottleneck(nj.Module):
         """
         return jnp.sign(x) * jnp.maximum(jnp.abs(x) - threshold, 0.0)
 
-    def loss(self, inputs):
+    def loss(self, post, prior):
         """
         计算概念瓶颈模块的损失
         
         Args:
-            inputs: 输入特征字典
+            post: 后验状态字典
+            prior: 先验状态字典
             
         Returns:
             tuple: (总损失, 损失详情字典)
         """
-        reconstructed, alpha = self.__call__(inputs)
+        reconstructed_post, reconstructed_prior, alpha = self.__call__(post, prior)
         
-        # 将inputs也reshape以匹配
-        features = self._inputs(inputs)
-        flat_features = features.reshape([-1, features.shape[-1]])
-        flat_reconstructed = reconstructed.reshape([-1, reconstructed.shape[-1]])
-
-        # 重建损失: MSE
-        rec_loss = jnp.mean((flat_features - flat_reconstructed) ** 2)
+        # 计算重建损失
+        rec_loss = 0.0
+        count = 0
+        for key in post:
+            if key in reconstructed_post:
+                diff = (post[key] - reconstructed_post[key]) ** 2
+                rec_loss += jnp.mean(diff)
+                count += 1
+        for key in prior:
+            if key in reconstructed_prior:
+                diff = (prior[key] - reconstructed_prior[key]) ** 2
+                rec_loss += jnp.mean(diff)
+                count += 1
+        rec_loss /= count if count > 0 else 1
         
         # 稀疏正则化损失: L1范数
         sparsity_loss = jnp.sum(jnp.abs(alpha), axis=-1).mean()
@@ -182,18 +363,19 @@ class ConceptBottleneck(nj.Module):
             "alpha_norm": jnp.mean(jnp.abs(alpha))
         }
 
-    def encode_decode(self, inputs):
+    def encode_decode(self, post, prior):
         """
         编码解码过程，用于获取概念表示和重建
         
         Args:
-            inputs: 输入特征字典
+            post: 后验状态字典
+            prior: 先验状态字典
             
         Returns:
-            tuple: (concept_repr: 概念表示, reconstructed: 重建特征)
+            tuple: (concept_repr: 概念表示, reconstructed_post: 重建后验, reconstructed_prior: 重建先验)
         """
-        reconstructed, alpha = self.__call__(inputs)
-        return alpha, reconstructed
+        reconstructed_post, reconstructed_prior, alpha = self.__call__(post, prior)
+        return alpha, reconstructed_post, reconstructed_prior
 
 
 class RSSM(nj.Module):
@@ -1178,7 +1360,7 @@ class Input:
         values = [inputs[k] for k in self._keys]  # 提取对应键的值
         dims = len(inputs[self._dims].shape)  # 获取目标张量的维度
         for i, value in enumerate(values):
-            if len(value.shape) > dims:  # 若维度不一致(知识维度，不是每一个维度上的通道不一致)，则进行reshape 具体而言 输入张量的维度必须小于等于目标张量的维度
+            if len(value.shape) > dims:  # 若维度不一致(只是维度，不是每一个维度上的通道不一致)，则进行reshape 具体而言 输入张量的维度必须小于等于目标张量的维度
                 values[i] = value.reshape(value.shape[: dims - 1] + (np.prod(value.shape[dims - 1 :]),))  # B T 32 32 -> B T 1024
         # B T 512
         # B T 1024

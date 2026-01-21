@@ -226,12 +226,31 @@ class WorldModel(nj.Module):
         self.encoder = nets.MultiEncoder(shapes, **config.encoder, name="enc")
         # RSSM：递归状态空间模型
         self.rssm = nets.RSSM(**config.rssm, name="rssm")
-        
+        # concept_bottleneck模块
+        self.concept_bottleneck = nets.ConceptBottleneck(config.concept_bottleneck, name="concept")  # 应该会自己推理输入维度
         # 定义多个预测头：解码器、奖励、连续性
+        # 为各个预测头添加concept作为输入
+        concept_inputs = ['deter', 'stoch', 'alpha']  # 基础输入加上概念表示
+        
         self.heads = {
-            "decoder": nets.MultiDecoder(shapes, **config.decoder, name="dec"),
-            "reward": nets.MLP((), **config.reward_head, name="rew"),
-            "cont": nets.MLP((), **config.cont_head, name="cont"),
+            "decoder": nets.MultiDecoder(
+                shapes, 
+                inputs=concept_inputs, 
+                **{k: v for k, v in config.decoder.items() if k != 'inputs'}, 
+                name="dec"
+            ),
+            "reward": nets.MLP(
+                (), 
+                inputs=concept_inputs, 
+                **{k: v for k, v in config.reward_head.items() if k != 'inputs'}, 
+                name="rew"
+            ),
+            "cont": nets.MLP(
+                (), 
+                inputs=concept_inputs, 
+                **{k: v for k, v in config.cont_head.items() if k != 'inputs'}, 
+                name="cont"
+            ),
         }
         # 世界模型优化器
         self.opt = jaxutils.Optimizer(name="model_opt", **config.model_opt)
@@ -288,13 +307,17 @@ class WorldModel(nj.Module):
         post, prior = self.rssm.observe(embed, prev_actions, data["is_first"], prev_latent)
         # post： deter, stoch, logit  B L是分离的
         # prior： deter, stoch, logit  B L是分离的
-        # 这里我们加入自己的模块，对post, prior进行进一步的操作
-        # post, prior, alpha = self.concept_bottleneck(post, prior)  # 被重建的post和prior，稀疏表示alpha
+        
+        # 保存原始的post和prior用于概念瓶颈模块的损失计算
+        orig_post, orig_prior = post, prior
+        
+        # 通过概念瓶颈模块处理post和prior
+        post, prior, alpha = self.concept_bottleneck(orig_post, orig_prior)  # 被重建的post和prior，稀疏表示alpha
 
         dists = {}
         # 准备特征用于预测头  只用后验和原始编码观测
-        feats = {**post, "embed": embed}
-        # feats： deter, stoch, logit, embed
+        feats = {**post, "embed": embed, "alpha": alpha}
+        # feats： deter, stoch, logit, embed, alpha
         for name, head in self.heads.items():
             # 根据配置决定是否对特征停止梯度
             out = head(feats if name in self.config.grad_heads else sg(feats))
@@ -302,7 +325,7 @@ class WorldModel(nj.Module):
             dists.update(out)
         
         losses = {}
-        # 计算动态损失和表征损失
+        # 计算动态损失和表征损失 (使用经过概念瓶颈处理后的post和prior)
         losses["dyn"] = self.rssm.dyn_loss(post, prior, **self.config.dyn_loss)
         losses["rep"] = self.rssm.rep_loss(post, prior, **self.config.rep_loss)
         # 动态损失：告诉天气预报模型："你看，你预测的和实际很接近，继续保持"
@@ -312,10 +335,15 @@ class WorldModel(nj.Module):
             loss = -dist.log_prob(data[key].astype(jnp.float32))
             assert loss.shape == embed.shape[:2], (key, loss.shape)
             losses[key] = loss
+        
+        # 计算概念瓶颈模块的损失（避免重复计算）
+        concept_losses = self._compute_concept_losses(orig_post, orig_prior, post, prior, alpha)
+        losses.update(concept_losses)
+        
         # 应用损失缩放
         scaled = {k: v * self.scales[k] for k, v in losses.items()}
         model_loss = sum(scaled.values())
-        out = {"embed": embed, "post": post, "prior": prior}
+        out = {"embed": embed, "post": post, "prior": prior, "alpha": alpha}
         out.update({f"{k}_loss": v for k, v in losses.items()})
         # 更新状态
         last_latent = {k: v[:, -1] for k, v in post.items()}
@@ -457,6 +485,105 @@ class WorldModel(nj.Module):
             metrics.update({f"cont_{k}": v for k, v in stats.items()})
         return metrics
 
+    def _compute_concept_losses(self, orig_post, orig_prior, post, prior, alpha):
+        """
+        计算概念瓶颈模块的损失
+        Args:
+            orig_post: 原始后验状态
+            orig_prior: 原始先验状态
+            post: 经过概念瓶颈处理后的后验状态
+            prior: 经过概念瓶颈处理后的先验状态
+            alpha: 稀疏表示
+        Returns:
+            概念模块损失字典
+        """
+        # 获取批次和时间维度，与其他损失保持一致
+        batch_time_shape = list(orig_post.values())[0].shape[:2]  # [B, T]
+        
+        # 将所有状态合并以进行统一处理
+        all_orig_values = list(orig_post.values()) + list(orig_prior.values())
+        all_post_values = list(post.values()) + list(prior.values())
+        
+        # 计算重建损失 - 批量处理所有状态
+        rec_losses = []
+        for orig_val, post_val in zip(all_orig_values, all_post_values):
+            # 对除了批次和时间维度以外的所有维度求平均，保持[B, T]维度
+            if orig_val.ndim > 2:
+                non_bt_dims = tuple(range(2, orig_val.ndim))
+                squared_diff = (orig_val - post_val) ** 2
+                # 添加数值稳定性处理
+                rec_loss = jnp.clip(squared_diff, 0.0, 1e6).mean(axis=non_bt_dims)
+            else:
+                squared_diff = (orig_val - post_val) ** 2
+                rec_loss = jnp.clip(squared_diff, 0.0, 1e6)
+            rec_losses.append(rec_loss)
+        
+        # 平均所有键的重建损失
+        rec_loss = sum(rec_losses) / len(rec_losses) if rec_losses else jnp.zeros(batch_time_shape)
+        
+        # 稀疏正则化损失: L1范数，保持[B, T]维度
+        abs_alpha = jnp.clip(jnp.abs(alpha), 0.0, 1e6)  # 数值稳定性处理
+        if alpha.ndim > 2:
+            non_bt_dims = tuple(range(2, alpha.ndim))
+            sparsity_loss = jnp.sum(abs_alpha, axis=non_bt_dims)
+        else:
+            sparsity_loss = abs_alpha
+        
+        # 计算KL散度损失，鼓励概念表示的多样性，保持[B, T]维度
+        alpha_flat = alpha.reshape(alpha.shape[0], alpha.shape[1], -1)  # [B, T, -1]
+        avg_alpha = jnp.mean(alpha_flat, axis=-1)  # [B, T]
+        uniform_dist = jnp.ones_like(avg_alpha) / alpha_flat.shape[-1]
+        # 添加数值稳定性处理
+        diversity_loss = jnp.clip((avg_alpha - uniform_dist) ** 2, 0.0, 1e6)  # [B, T]
+        
+        # 获取稀疏正则化系数，如果配置中不存在则使用默认值
+        lambda_reg = getattr(self.config, 'lambda_', 0.05)
+        if hasattr(self.config, 'concept_bottleneck') and hasattr(self.config.concept_bottleneck, 'lambda_'):
+            lambda_reg = self.config.concept_bottleneck.lambda_
+        
+        # 总概念损失，保持[B, T]维度
+        total_concept_loss = rec_loss + lambda_reg * sparsity_loss + 0.1 * diversity_loss
+        
+        return {
+            "concept_total_loss": total_concept_loss,
+            "concept_reconstruction_loss": rec_loss,
+            "concept_sparsity_loss": sparsity_loss,
+            "concept_diversity_loss": diversity_loss
+        }
+
+    def imagine(self, policy, start, horizon):
+        """
+        在世界模型中进行想象（规划）
+        Args:
+            policy: 用于想象的策略
+            start: 起始状态
+            horizon: 想象的时域长度
+        Returns:
+            想象轨迹
+        """
+        first_cont = (1.0 - start["is_terminal"]).astype(jnp.float32)
+        keys = list(self.rssm.initial(1).keys())
+        start = {k: v for k, v in start.items() if k in keys}
+        start["action"] = policy(start)
+
+        def step(prev, _):
+            """
+            想象步骤函数
+            """
+            prev = prev.copy()
+            # 通过RSSM的图像步骤得到下一个状态
+            state = self.rssm.img_step(prev, prev.pop("action"))
+            return {**state, "action": policy(state)}
+
+        # 扫描执行想象步骤
+        traj = jaxutils.scan(step, jnp.arange(horizon), start, self.config.imag_unroll)
+        traj = {k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items()}
+        # 计算连续性和折扣权重
+        cont = self.heads["cont"](traj).mode()
+        traj["cont"] = jnp.concatenate([first_cont[None], cont[1:]], 0)
+        discount = 1 - 1 / self.config.horizon
+        traj["weight"] = jnp.cumprod(discount * traj["cont"], 0) / discount
+        return traj
 
 class ImagActorCritic(nj.Module):
     """

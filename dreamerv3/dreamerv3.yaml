@@ -144,8 +144,8 @@ defaults:
   concept_bottleneck:
     {  # init的时候自己推断是否进行降维表征与升维重建
       knowledge_dim: 128,  # 知识表示的维度
-      enc_trans_ratio: 2,  # 降维时，每次维度//2
-      dec_trans_ratio: 2,  # 升维时，每次维度*2
+      enc_trans_ratio: 4,  # 降维时，每次维度//2
+      dec_trans_ratio: 4,  # 升维时，每次维度*2
       activate: silu,  # 激活函数
       norm: layer,  # 归一化方法
       inputs: [deter, stoch],
@@ -166,6 +166,10 @@ defaults:
       actor: 1.0,
       critic: 1.0,
       slowreg: 1.0,
+      concept_total_loss: 1.0,  # 概念表示的loss
+      concept_reconstruction_loss: 1.0,  # 概念表示的重建loss
+      concept_sparsity_loss: 1.0,  # 概念表示的稀疏性loss
+      concept_diversity_loss: 1.0,  # 概念表示的iversity_loss
     }
   dyn_loss: { impl: kl, free: 1.0 }
   rep_loss: { impl: kl, free: 1.0 }
