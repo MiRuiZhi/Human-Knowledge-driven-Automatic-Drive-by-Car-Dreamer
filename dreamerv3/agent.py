@@ -360,6 +360,7 @@ class WorldModel(nj.Module):
         first_cont = (1.0 - start["is_terminal"]).astype(jnp.float32)
         keys = list(self.rssm.initial(1).keys())
         start = {k: v for k, v in start.items() if k in keys}
+        start = jaxutils.cast_to_compute(start)
         start["action"] = policy(start)
 
         def step(prev, _):
@@ -373,7 +374,10 @@ class WorldModel(nj.Module):
 
         # 扫描执行想象步骤
         traj = jaxutils.scan(step, jnp.arange(horizon), start, self.config.imag_unroll)
-        traj = {k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items()}
+        traj = {k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items()}  # 是 T B*T Dim
+        # concept
+        traj, alpha = self.concept(traj)
+        traj["alpha"] = alpha
         # 计算连续性和折扣权重
         cont = self.heads["cont"](traj).mode()
         traj["cont"] = jnp.concatenate([first_cont[None], cont[1:]], 0)
@@ -395,6 +399,7 @@ class WorldModel(nj.Module):
         first_cont = (1.0 - start["is_terminal"]).astype(jnp.float32)
         keys = list(self.rssm.initial(1).keys())
         start = {k: v for k, v in start.items() if k in keys}
+        start = jaxutils.cast_to_compute(start)
         outs, carry = policy(start, carry)
         start["action"] = outs
         start["carry"] = carry
@@ -428,13 +433,20 @@ class WorldModel(nj.Module):
         """
         state = self.initial(len(data["is_first"]))
         report = {}
-        report.update(self.loss(data, state)[-1][-1])  # 计算并添加损失指标
+        report.update(self.loss(data, state)[-1][-2])  # 计算并添加损失指标
         # 观察一小段数据用于重建和开放循环预测
         context, _ = self.rssm.observe(self.encoder(data)[:6, :5], data["action"][:6, :5], data["is_first"][:6, :5])
+        # concept
+        context, alpha_1 = self.concept(context)
+        
         start = {k: v[:, -1] for k, v in context.items()}
         # 重建和开放循环预测
+        context["alpha"] = alpha_1
         recon = self.heads["decoder"](context)
-        openl = self.heads["decoder"](self.rssm.imagine(data["action"][:6, 5:], start))
+        state_ = self.rssm.imagine(data["action"][:6, 5:], start)
+        state_, alpha_2 = self.concept(state_)
+        state_["alpha"] = alpha_2
+        openl = self.heads["decoder"](state_)  # 这样应该就可以了
         # 为解码器的CNN形状创建视频网格报告
         for key in self.heads["decoder"].cnn_shapes.keys():
             truth = data[key][:6].astype(jnp.float32)
@@ -476,42 +488,6 @@ class WorldModel(nj.Module):
             stats = jaxutils.balance_stats(dists["cont"], data["cont"], 0.5)
             metrics.update({f"cont_{k}": v for k, v in stats.items()})
         return metrics
-
-    def imagine(self, policy, start, horizon):
-        """
-        在世界模型中进行想象（规划）
-        Args:
-            policy: 用于想象的策略
-            start: 起始状态
-            horizon: 想象的时域长度
-        Returns:
-            想象轨迹
-        """
-        first_cont = (1.0 - start["is_terminal"]).astype(jnp.float32)
-        keys = list(self.rssm.initial(1).keys())
-        start = {k: v for k, v in start.items() if k in keys}
-        start["action"] = policy(start)
-
-        def step(prev, _):
-            """
-            想象步骤函数
-            """
-            prev = prev.copy()
-            # 通过RSSM的图像步骤得到下一个状态
-            state = self.rssm.img_step(prev, prev.pop("action"))
-            return {**state, "action": policy(state)}
-
-        # 扫描执行想象步骤
-        traj = jaxutils.scan(step, jnp.arange(horizon), start, self.config.imag_unroll)
-        traj = {k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items()}
-        traj, concept = self.concept(traj)
-        traj["alpha"] = concept
-        # 计算连续性和折扣权重
-        cont = self.heads["cont"](traj).mode()  # 这里计算各个头的输出
-        traj["cont"] = jnp.concatenate([first_cont[None], cont[1:]], 0)
-        discount = 1 - 1 / self.config.horizon
-        traj["weight"] = jnp.cumprod(discount * traj["cont"], 0) / discount
-        return traj
 
 class ImagActorCritic(nj.Module):
     """

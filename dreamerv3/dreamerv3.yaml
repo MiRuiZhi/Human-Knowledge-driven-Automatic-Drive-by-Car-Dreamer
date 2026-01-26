@@ -55,9 +55,9 @@ defaults:
   # Agent
   task_behavior: Greedy
   expl_behavior: None
-  batch_size: 1
-  batch_length: 1
-  data_loaders: 1
+  batch_size: 2
+  batch_length: 8  # 大于6
+  data_loaders: 8
 
   # World Model
   grad_heads: [decoder, reward, cont, concept]
