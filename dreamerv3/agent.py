@@ -431,13 +431,14 @@ class WorldModel(nj.Module):
         Returns:
             包含报告指标的字典
         """
-        state = self.initial(len(data["is_first"]))
+        state = self.initial(len(data["is_first"]))  # float16
         report = {}
         report.update(self.loss(data, state)[-1][-2])  # 计算并添加损失指标
         # 观察一小段数据用于重建和开放循环预测
         context, _ = self.rssm.observe(self.encoder(data)[:6, :5], data["action"][:6, :5], data["is_first"][:6, :5])
         # concept
         context, alpha_1 = self.concept(context)
+        context = tree_map(lambda x: x.astype(jnp.float16), context)
         
         start = {k: v[:, -1] for k, v in context.items()}
         # 重建和开放循环预测
