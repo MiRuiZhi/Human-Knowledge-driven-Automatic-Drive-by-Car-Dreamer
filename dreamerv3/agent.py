@@ -92,7 +92,7 @@ class Agent(nj.Module):
         # 解析状态：(上一潜变量, 上一动作), 任务状态, 探索状态
         (prev_latent, prev_action), task_state, expl_state = state
         embed = self.wm.encoder(obs)  # 编码观测
-        # 通过RSSM更新潜变量
+        # 通过RSSM更新潜变量 latent为后验状态
         latent, _ = self.wm.rssm.obs_step(prev_latent, prev_action, embed, obs["is_first"])
         # 获取探索行为策略的输出
         self.expl_behavior.policy(latent, expl_state)
@@ -130,10 +130,10 @@ class Agent(nj.Module):
         metrics = {}
         data = self.preprocess(data)  # 预处理数据
         # 训练世界模型
-        state, wm_outs, mets = self.wm.train(data, state)
+        state, wm_outs, mets, alpha = self.wm.train(data, state)
         metrics.update(mets)
         # 构造上下文：合并原始数据和世界模型输出 原始数据键值对 和 世界模型键值对
-        context = {**data, **wm_outs["post"]}
+        context = {**data, **wm_outs["post"], "alpha": alpha}
         # 重塑数据用于后续处理 不区分批次和时间维度
         start = tree_map(lambda x: x.reshape([-1] + list(x.shape[2:])), context)
         # 训练任务行为策略  任务行为、探索行为  被Greedy装饰的policy网络
@@ -226,15 +226,35 @@ class WorldModel(nj.Module):
         self.encoder = nets.MultiEncoder(shapes, **config.encoder, name="enc")
         # RSSM：递归状态空间模型
         self.rssm = nets.RSSM(**config.rssm, name="rssm")
+        # 概念模块
+        self.concept = nets.Concept(**config.concept, name="concept")
         # 定义多个预测头：解码器、奖励、连续性
+        # 为各个预测头添加concept作为输入 
+        concept_inputs = ['deter', 'stoch', 'alpha']  # 基础输入加上概念表示
+        
         self.heads = {
-            "decoder": nets.MultiDecoder(shapes, **config.decoder, name="dec"),
-            "reward": nets.MLP((), **config.reward_head, name="rew"),
-            "cont": nets.MLP((), **config.cont_head, name="cont"),
+            "decoder": nets.MultiDecoder(
+                shapes, 
+                inputs=concept_inputs, 
+                **{k: v for k, v in config.decoder.items() if k != 'inputs'}, 
+                name="dec"
+            ),
+            "reward": nets.MLP(
+                (), 
+                inputs=concept_inputs, 
+                **{k: v for k, v in config.reward_head.items() if k != 'inputs'}, 
+                name="rew"
+            ),
+            "cont": nets.MLP(
+                (), 
+                inputs=concept_inputs, 
+                **{k: v for k, v in config.cont_head.items() if k != 'inputs'}, 
+                name="cont"
+            ),
         }
         # 世界模型优化器
         self.opt = jaxutils.Optimizer(name="model_opt", **config.model_opt)
-        # 损失缩放配置
+        # 损失缩放配置, 给self.heads["decoder"].cnn_shapes里的键，mapping loss_scale里的值，生成一个字典
         scales = self.config.loss_scales.copy()
         image, vector = scales.pop("image"), scales.pop("vector")
         scales.update({k: image for k in self.heads["decoder"].cnn_shapes})
@@ -265,9 +285,9 @@ class WorldModel(nj.Module):
         # 获取需要优化的模块
         modules = [self.encoder, self.rssm, *self.heads.values()]
         # 使用优化器训练模型
-        mets, (state, outs, metrics) = self.opt(modules, self.loss, data, state, has_aux=True)
+        mets, (state, outs, metrics, alpha) = self.opt(modules, self.loss, data, state, has_aux=True)
         metrics.update(mets)
-        return state, outs, metrics
+        return state, outs, metrics, alpha
 
     def loss(self, data, state):
         """
@@ -279,16 +299,21 @@ class WorldModel(nj.Module):
             损失值和相关指标
         """
         # 编码观测
-        embed = self.encoder(data)  # B L F
-        prev_latent, prev_action = state  # 先前的潜变量和动作 RSSM 隐状态 和 动作 B Action维度
-        # 准备动作序列 B Length A
+        embed = self.encoder(data)  # B L d（被处理后的特征通道）
+        prev_latent, prev_action = state  # 先前的潜变量和动作 RSSM 隐状态 和 动作 B Action维度  每个latend都有deter (B,512) stoch(B,32,32) logit(B,32,32)
+        # 准备动作序列 prev_actions: B Length A                prev_action:  B*L a 
         prev_actions = jnp.concatenate([prev_action[:, None], data["action"][:, :-1]], 1)
         # 通过RSSM观察得到后验和先验状态
         post, prior = self.rssm.observe(embed, prev_actions, data["is_first"], prev_latent)
-        
+        # post： deter, stoch, logit  B L是分离的
+        # prior： deter, stoch, logit  B L是分离的
         dists = {}
-        # 准备特征用于预测头
+        # 准备特征用于预测头  只用后验和原始编码观测
         feats = {**post, "embed": embed}
+        # feats： deter, stoch, logit, embed
+        # concept
+        feats, alpha = self.concept(feats)  # 在feats中添加concept表示 只用后验和原始编码观测
+        feats["alpha"] = alpha
         for name, head in self.heads.items():
             # 根据配置决定是否对特征停止梯度
             out = head(feats if name in self.config.grad_heads else sg(feats))
@@ -296,7 +321,7 @@ class WorldModel(nj.Module):
             dists.update(out)
         
         losses = {}
-        # 计算动态损失和表征损失
+        # 计算动态损失和表征损失 (使用经过概念瓶颈处理后的post和prior)
         losses["dyn"] = self.rssm.dyn_loss(post, prior, **self.config.dyn_loss)
         losses["rep"] = self.rssm.rep_loss(post, prior, **self.config.rep_loss)
         # 动态损失：告诉天气预报模型："你看，你预测的和实际很接近，继续保持"
@@ -306,6 +331,7 @@ class WorldModel(nj.Module):
             loss = -dist.log_prob(data[key].astype(jnp.float32))
             assert loss.shape == embed.shape[:2], (key, loss.shape)
             losses[key] = loss
+        
         # 应用损失缩放
         scaled = {k: v * self.scales[k] for k, v in losses.items()}
         model_loss = sum(scaled.values())
@@ -319,7 +345,7 @@ class WorldModel(nj.Module):
         metrics = self._metrics(data, dists, post, prior, losses, model_loss)
         # 存储原始模型损失用于优先经验回放
         metrics["model_loss_raw"] = model_loss
-        return model_loss.mean(), (state, out, metrics)
+        return model_loss.mean(), (state, out, metrics, alpha)
 
     def imagine(self, policy, start, horizon):
         """
@@ -451,6 +477,41 @@ class WorldModel(nj.Module):
             metrics.update({f"cont_{k}": v for k, v in stats.items()})
         return metrics
 
+    def imagine(self, policy, start, horizon):
+        """
+        在世界模型中进行想象（规划）
+        Args:
+            policy: 用于想象的策略
+            start: 起始状态
+            horizon: 想象的时域长度
+        Returns:
+            想象轨迹
+        """
+        first_cont = (1.0 - start["is_terminal"]).astype(jnp.float32)
+        keys = list(self.rssm.initial(1).keys())
+        start = {k: v for k, v in start.items() if k in keys}
+        start["action"] = policy(start)
+
+        def step(prev, _):
+            """
+            想象步骤函数
+            """
+            prev = prev.copy()
+            # 通过RSSM的图像步骤得到下一个状态
+            state = self.rssm.img_step(prev, prev.pop("action"))
+            return {**state, "action": policy(state)}
+
+        # 扫描执行想象步骤
+        traj = jaxutils.scan(step, jnp.arange(horizon), start, self.config.imag_unroll)
+        traj = {k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items()}
+        traj, concept = self.concept(traj)
+        traj["alpha"] = concept
+        # 计算连续性和折扣权重
+        cont = self.heads["cont"](traj).mode()  # 这里计算各个头的输出
+        traj["cont"] = jnp.concatenate([first_cont[None], cont[1:]], 0)
+        discount = 1 - 1 / self.config.horizon
+        traj["weight"] = jnp.cumprod(discount * traj["cont"], 0) / discount
+        return traj
 
 class ImagActorCritic(nj.Module):
     """

@@ -129,7 +129,7 @@ def main(argv=None):
 
     # 创建DreamerV3智能体
     # 输入参数包括：观测空间、动作空间、步数计数器、配置
-    agent = dreamerv3.ConceptAgent(env.obs_space, env.act_space, step, dreamerv3_config)
+    agent = dreamerv3.Agent(env.obs_space, env.act_space, step, dreamerv3_config)
     
     # 创建均匀随机回放缓冲区，用于存储经验数据
     # 参数包括：序列长度、回放缓冲区大小、回放缓冲区保存路径

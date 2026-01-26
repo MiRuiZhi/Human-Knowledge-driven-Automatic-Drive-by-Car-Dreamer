@@ -55,16 +55,16 @@ defaults:
   # Agent
   task_behavior: Greedy
   expl_behavior: None
-  batch_size: 2
-  batch_length: 8
-  data_loaders: 8
+  batch_size: 1
+  batch_length: 1
+  data_loaders: 1
 
   # World Model
   grad_heads: [decoder, reward, cont, concept]
   rssm:
     {
-      deter: 4096,
-      units: 1024,
+      deter: 200,
+      units: 200,
       stoch: 32,
       classes: 32,
       act: silu,
@@ -141,18 +141,10 @@ defaults:
       winit: normal,
       fan: avg,
     }
-  concept_bottleneck:
+  concept:
     {  # init的时候自己推断是否进行降维表征与升维重建
-      knowledge_dim: 128,  # 知识表示的维度
-      enc_trans_ratio: 4,  # 降维时，每次维度//2
-      dec_trans_ratio: 4,  # 升维时，每次维度*2
-      activate: silu,  # 激活函数
-      norm: layer,  # 归一化方法
-      inputs: [deter, stoch],
-      concept_atoms: 128,  # 概念的数量
-      lambda: 0.05,
-      step: 50,  # ISTA迭代步数
-      gamma: 0.1,
+      act: silu,
+      norm: layer,
     }
   
   loss_scales:
