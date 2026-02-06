@@ -60,3 +60,4 @@ checkpoints/
 .coverage
 htmlcov/
 .pyre/
+/data/

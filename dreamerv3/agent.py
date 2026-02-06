@@ -305,6 +305,7 @@ class WorldModel(nj.Module):
         prev_actions = jnp.concatenate([prev_action[:, None], data["action"][:, :-1]], 1)
         # 通过RSSM观察得到后验和先验状态
         post, prior = self.rssm.observe(embed, prev_actions, data["is_first"], prev_latent)
+        post_copy = post  # 为了concept的loss
         # post： deter, stoch, logit  B L是分离的
         # prior： deter, stoch, logit  B L是分离的
         dists = {}
@@ -324,6 +325,9 @@ class WorldModel(nj.Module):
         # 计算动态损失和表征损失 (使用经过概念瓶颈处理后的post和prior)
         losses["dyn"] = self.rssm.dyn_loss(post, prior, **self.config.dyn_loss)
         losses["rep"] = self.rssm.rep_loss(post, prior, **self.config.rep_loss)
+        concept_loss = self.concept.loss(post_copy, post, alpha)  # 字典
+        for k, v in concept_loss.items():
+            losses[k] = v
         # 动态损失：告诉天气预报模型："你看，你预测的和实际很接近，继续保持"
         # 表征损失：告诉观测更新机制："不要因为一个异常天气就彻底改变认知"
         # 计算各预测头的损失

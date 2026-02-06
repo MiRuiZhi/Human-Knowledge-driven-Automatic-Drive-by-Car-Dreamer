@@ -15,7 +15,7 @@ except ImportError:
 
 CONVERSION = {
     np.floating: np.float32,
-    np.signedinteger: np.int64,
+    np.signedinteger: np.int32,  # 修改为int32以兼容JAX
     np.uint8: np.uint8,
     bool: bool,
 }

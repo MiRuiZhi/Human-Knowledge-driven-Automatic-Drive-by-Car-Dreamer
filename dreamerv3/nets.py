@@ -524,14 +524,27 @@ class Concept(nj.Module):
     def __init__(
         self,
         inputs=["deter", "stoch"],    # 输入键列表  先这样，看看默认是不是都提取一致的输入
-        **kw,                 # 其他关键字参数
+        concept_dim=128,              # 概念维度
+        dict_size=128,                # 字典大小
+        lambda_sparse=0.01,           # 稀疏性正则化权重
+        **kw,                         # 其他关键字参数
     ):
         self.input_list = inputs
+        self.concept_dim = concept_dim
+        self.dict_size = dict_size
+        self.lambda_sparse = lambda_sparse
         layers_to_knowledge = [1024, 512, 256, 128]  # 降维有4层，每层的shape
         # 原始->1024->512->256->128  知识提取
         layers_to_origin = layers_to_knowledge[:-1][::-1]  # 升维有3层，每层的shape 最后升维回原始维度
         # 128->256->512->1024
 
+        # 定义MLP的合法参数列表，排除Concept模块特有参数和只适用于分布的参数
+        excluded_params = {
+            'concept_dim', 'dict_size', 'lambda_sparse',  # Concept特有参数
+            'dist', 'temp', 'minstd', 'maxstd', 'outscale', 'outnorm', 'unimix', 'bins'  # 分布特有参数
+        }
+        mlp_params = {k: v for k, v in kw.items() if k not in excluded_params}
+        
         # 建立线性层（改为真正的MLP层）
         self._layers_to_knowledge = [  # layers_to_knowledge是目标维度列表
             MLP(
@@ -539,7 +552,7 @@ class Concept(nj.Module):
                 layers=4,                         # 4层MLP
                 units=256,                        # 中间层单元数
                 inputs=['tensor'],
-                **kw,                             # 包含激活函数等参数
+                **mlp_params,                             # 包含激活函数等参数
                 name=f"knowledge_{i}"
             )
             for i in range(len(layers_to_knowledge))
@@ -551,7 +564,7 @@ class Concept(nj.Module):
                 layers=4,                          # 4层MLP
                 units=256,                         # 中间层单元数
                 inputs=['tensor'],
-                **kw,                              # 包含激活函数等参数
+                **mlp_params,                              # 包含激活函数等参数
                 name=f"origin_{i}"
             ) 
             for i in range(len(layers_to_origin))
@@ -562,15 +575,13 @@ class Concept(nj.Module):
             layers=4,                              # 4层MLP
             units=256,                             # 中间层单元数
             inputs=['tensor'],
-            **kw,                                  # 包含激活函数等参数
+            **mlp_params,                                  # 包含激活函数等参数
             name="to_output"
         )
         # 概念提取层
-        self._extract_concept = ConceptExtractor(feat_dim=128, concept_dim=128, name="extract_concept")  # 这里后续实现具体的概念提取方法
+        self._extract_concept = ConceptExtractor(feat_dim=128, concept_dim=concept_dim, dict_size=dict_size, lambda_sparse=lambda_sparse, name="extract_concept")  # 这里后续实现具体的概念提取方法
         # 
         self._inputs = Input(inputs, dims="deter")  # 将以 "deter" 键的张量作为维度参考标准
-        
-        
     def __call__(self, inputs):
         """
         通过概念瓶颈层进行前向传播
@@ -596,7 +607,7 @@ class Concept(nj.Module):
             features = features_dist.mode()  # 使用mode()获取分布的均值作为特征
         
         # 这里进行概念提取
-        _, alpha = self._extract_concept(features)
+        features, alpha = self._extract_concept(features)
         
         # 再通过升维网络
         for layer in self._layers_to_origin:
@@ -622,6 +633,55 @@ class Concept(nj.Module):
 
         # 返回压缩的概念表示（用于后续处理）
         return inputs, alpha
+    
+    def loss(self, state_p, state, alpha):
+        """
+        计算概念瓶颈层的损失函数
+        
+        Args:
+            state_p: 原始状态
+            state: 重建后的状态
+            alpha: 概念编码
+        Returns:
+            损失字典
+        """
+        loss_dict = {}
+        
+        # 重建误差：计算state相对于state_p的重建损失
+        keys = ["deter", "stoch"]
+        rec_loss = jnp.array(0.0)
+        for key in keys:
+            # Reshape from (B, T, D) to (B*T, D)
+            state_flat = state[key].reshape(-1, state[key].shape[-1])
+            state_p_flat = state_p[key].reshape(-1, state_p[key].shape[-1])
+            # 计算均方误差
+            key_rec_loss = jnp.mean(jnp.square(state_flat - state_p_flat))
+            rec_loss += key_rec_loss
+        loss_dict["concept_rec_loss"] = rec_loss
+        
+        # 稀疏性损失：使用L1正则化鼓励alpha稀疏
+        sparsity_loss = jnp.mean(jnp.abs(alpha))
+        loss_dict["concept_sparsity_loss"] = sparsity_loss
+        
+        # 多样性损失：基于字典D的原子之间计算（而非alpha）
+        D = self._extract_concept.get('concept_dictionary', 
+                                     lambda: self._extract_concept.normalize_dictionary(
+                                         self._extract_concept._init_dict.read()))
+        
+        # 对字典原子进行L2归一化
+        D_norm = D / jnp.linalg.norm(D, axis=1, keepdims=True)
+        # 计算字典原子间的相似度矩阵
+        sim_matrix = D_norm @ D_norm.T
+
+        # 计算非对角线元素的平方损失（鼓励原子间正交）
+        off_diag = sim_matrix - jnp.eye(sim_matrix.shape[0])
+        diversity_loss = jnp.mean(jnp.square(off_diag))
+        loss_dict["concept_diversity_loss"] = diversity_loss
+
+        # 记录D的梯度范数以监控训练过程
+        loss_dict["concept_dictionary_grad_norm"] = jnp.linalg.norm(jax.grad(lambda D: jnp.sum(D))(D))
+        
+        return loss_dict
 
 
 class ConceptExtractor(nj.Module):
@@ -740,48 +800,29 @@ class ConceptExtractor(nj.Module):
         concept_codes = concept_codes.reshape((*original_shape[:-1], self.dict_size))
         
         return reconstructed_features, concept_codes
-    
-    def encode(self, features, task_embedding=None):
+
+    def loss(self, target_features, predicted_features, concept_codes):
         """
-        仅获取概念编码（稀疏表示），不返回重构特征
+        计算概念提取器的损失函数
         
         Args:
-            features: 输入特征
-            task_embedding: 任务嵌入，可选
-            
-        Returns:
+            target_features: 目标特征
+            predicted_features: 预测的特征（重构特征）
             concept_codes: 概念编码（稀疏表示）
-        """
-        _, concept_codes = self.__call__(features, task_embedding)
-        return concept_codes
-    
-    def decode(self, concept_codes):
-        """
-        从概念编码重构特征
-        
-        Args:
-            concept_codes: 概念编码
             
         Returns:
-            reconstructed_features: 重构的特征
+            损失值
         """
-        original_shape = concept_codes.shape
-        concept_codes = concept_codes.reshape(-1, self.dict_size)
+        # 重构误差
+        reconstruction_loss = jnp.mean(jnp.square(target_features - predicted_features))
         
-        # 获取字典矩阵并进行归一化
-        D = self.get('concept_dictionary', 
-                     lambda: self.normalize_dictionary(self._init_dict.read()))
-        D = self.normalize_dictionary(D)
+        # 稀疏性损失：鼓励概念编码稀疏
+        sparsity_loss = jnp.mean(jnp.abs(concept_codes))
         
-        # 重构
-        reconstructed = jnp.dot(concept_codes, D)
+        # 总损失
+        total_loss = reconstruction_loss + self.lambda_sparse * sparsity_loss
         
-        # 计算重构特征的维度
-        feat_dim = D.shape[1]
-        new_shape = (*original_shape[:-1], feat_dim)
-        reconstructed = reconstructed.reshape(new_shape)
-        
-        return reconstructed
+        return total_loss
 
 
 class ImageEncoderResnet(nj.Module):
@@ -934,7 +975,7 @@ class MLP(nj.Module):
         self._units = units
         self._inputs = Input(inputs, dims=dims)
         self._symlog_inputs = symlog_inputs
-        distkeys = ("dist", "outscale", "minstd", "maxstd", "outnorm", "unimix", "bins")
+        distkeys = ("dist", "outscale", "minstd", "maxstd", "outnorm", "unimix", "bins", "temp")
         self._dense = {k: v for k, v in kw.items() if k not in distkeys}
         self._dist = {k: v for k, v in kw.items() if k in distkeys}
 
@@ -996,6 +1037,7 @@ class Dist(nj.Module):  # 自动根据shape生成对应的概率分布
         maxstd=1.0,           # 最大标准差
         unimix=0.0,           # 均匀混合系数
         bins=255,             # 离散化箱数
+        temp=1.0,             # 温度参数，用于控制分布的随机性
     ):
         assert all(isinstance(dim, int) for dim in shape), shape
         self._shape = shape
@@ -1006,6 +1048,7 @@ class Dist(nj.Module):  # 自动根据shape生成对应的概率分布
         self._outscale = outscale
         self._outnorm = outnorm
         self._bins = bins
+        self._temp = temp  # 添加温度参数
 
     def __call__(self, inputs):
         """
@@ -1059,6 +1102,14 @@ class Dist(nj.Module):  # 自动根据shape生成对应的概率分布
             dist = tfd.Independent(dist, len(self._shape))
             dist.minent = np.prod(self._shape) * tfd.Normal(0.0, lo).entropy()
             dist.maxent = np.prod(self._shape) * tfd.Normal(0.0, hi).entropy()
+            return dist
+        if self._dist == "trunc_normal":
+            lo, hi = self._minstd, self._maxstd
+            std = (hi - lo) * jax.nn.sigmoid(std + 2.0) + lo
+            dist = tfd.TruncatedNormal(jnp.tanh(out), std, -1.0, 1.0)
+            dist = tfd.Independent(dist, len(self._shape))
+            dist.minent = np.prod(self._shape) * tfd.TruncatedNormal(0.0, lo, -1.0, 1.0).entropy()
+            dist.maxent = np.prod(self._shape) * tfd.TruncatedNormal(0.0, hi, -1.0, 1.0).entropy()
             return dist
         if self._dist == "binary":
             dist = tfd.Bernoulli(out)

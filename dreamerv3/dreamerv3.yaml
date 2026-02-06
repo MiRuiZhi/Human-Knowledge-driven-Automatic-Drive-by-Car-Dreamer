@@ -158,13 +158,14 @@ defaults:
       actor: 1.0,
       critic: 1.0,
       slowreg: 1.0,
-      concept_total_loss: 1.0,  # 概念表示的loss
-      concept_reconstruction_loss: 1.0,  # 概念表示的重建loss
-      concept_sparsity_loss: 1.0,  # 概念表示的稀疏性loss
-      concept_diversity_loss: 1.0,  # 概念表示的iversity_loss
+      concept_rec_loss: 1.0,
+      concept_sparsity_loss: 0.5,
+      concept_diversity_loss: 0.5,
+      concept_dictionary_grad_norm: 0,
     }
   dyn_loss: { impl: kl, free: 1.0 }
   rep_loss: { impl: kl, free: 1.0 }
+  # concept_loss: { impl: full}
   model_opt:
     {
       opt: adam,
