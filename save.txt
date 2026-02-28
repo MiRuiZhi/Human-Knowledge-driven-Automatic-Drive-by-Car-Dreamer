@@ -313,3 +313,4 @@ export PYTHONPATH="${CARLA_ROOT}/PythonAPI/carla":${PYTHONPATH}
     .*\.units: 1024
     .*\.layers: 5
 
+#baseline 在统一配置下，对若干个环境进行训练，记录效果
